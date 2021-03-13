@@ -1,7 +1,7 @@
 use proc_macro2::Span;
 use quote::quote;
 use syn::{
-    parse_macro_input, AngleBracketedGenericArguments, Attribute, Data, DataStruct, DeriveInput,
+    parse_macro_input, AngleBracketedGenericArguments, Data, DataStruct, DeriveInput,
     GenericArgument, Ident, Lit, Meta, MetaNameValue, Path, PathArguments, PathSegment, Type,
     TypePath,
 };
@@ -36,9 +36,8 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         .map(|field| {
             let attrs = &field.attrs;
 
-            let _attr_val = if let Some(attr) = attrs.first() {
-                let segments = &attr.path.segments;
-                if let Some(PathSegment { ident, .. }) = segments.first() {
+            let _attr_val = attrs.first().map(|attr| {
+                attr.path.segments.first().map(|PathSegment { ident, .. }| {
                     if ident == "builder" {
                         if let Ok(Meta::NameValue(MetaNameValue {
                             lit: Lit::Str(litstr),
@@ -52,27 +51,23 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     } else {
                         None
                     }
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+                })
+            });
 
             let name = &field.ident;
             let fieldtype = match &field.ty {
                 Type::Path(TypePath {
                     path: Path { segments, .. },
                     ..
-                }) => match &segments[0] {
-                    PathSegment {
+                }) => match segments.first() {
+                    Some(PathSegment {
                         ident,
                         arguments:
                             PathArguments::AngleBracketed(AngleBracketedGenericArguments {
                                 args, ..
                             }),
-                    } if ident == "Option" => match &args[0] {
-                        GenericArgument::Type(t) => Some(FieldType::Optional(t)),
+                    }) if ident == "Option" => match args.first() {
+                        Some(GenericArgument::Type(t)) => Some(FieldType::Optional(t)),
                         _ => None,
                     },
                     _ => None,
