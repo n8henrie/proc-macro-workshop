@@ -1,20 +1,22 @@
-use proc_macro2::{Ident, Span};
+use proc_macro2::Span;
 use quote::quote;
 use syn::{
-    parse_macro_input, AngleBracketedGenericArguments, Data, DataStruct, DeriveInput,
-    GenericArgument, Path, PathArguments, PathSegment, Type, TypePath,
+    parse_macro_input, AngleBracketedGenericArguments, Attribute, Data, DataStruct, DeriveInput,
+    GenericArgument, Ident, Lit, Meta, MetaNameValue, Path, PathArguments, PathSegment, Type,
+    TypePath,
 };
 
 enum FieldType<'a> {
     Optional(&'a Type),
     Required(&'a Type),
 }
+
 struct BuilderField<'a> {
     name: &'a Option<Ident>,
     fieldtype: FieldType<'a>,
 }
 
-#[proc_macro_derive(Builder)]
+#[proc_macro_derive(Builder, attributes(builder))]
 pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
@@ -32,6 +34,31 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let struct_fields = fields
         .iter()
         .map(|field| {
+            let attrs = &field.attrs;
+
+            let _attr_val = if let Some(attr) = attrs.first() {
+                let segments = &attr.path.segments;
+                if let Some(PathSegment { ident, .. }) = segments.first() {
+                    if ident == "builder" {
+                        if let Ok(Meta::NameValue(MetaNameValue {
+                            lit: Lit::Str(litstr),
+                            ..
+                        })) = attr.parse_args()
+                        {
+                            Some(litstr.value())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
             let name = &field.ident;
             let fieldtype = match &field.ty {
                 Type::Path(TypePath {
