@@ -9,10 +9,11 @@ use syn::{
 enum FieldType<'a> {
     Optional(&'a Type),
     Required(&'a Type),
+    Repeater((Ident, &'a Type)),
 }
 
 struct BuilderField<'a> {
-    name: &'a Option<Ident>,
+    dest: &'a Option<Ident>,
     fieldtype: FieldType<'a>,
 }
 
@@ -36,70 +37,107 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         .map(|field| {
             let attrs = &field.attrs;
 
-            let _attr_val = attrs.first().map(|attr| {
-                attr.path.segments.first().map(|PathSegment { ident, .. }| {
-                    if ident == "builder" {
-                        if let Ok(Meta::NameValue(MetaNameValue {
-                            lit: Lit::Str(litstr),
-                            ..
-                        })) = attr.parse_args()
-                        {
-                            Some(litstr.value())
+            let attr_val: Option<String> = attrs.first().and_then(|attr| {
+                attr.path
+                    .segments
+                    .first()
+                    .and_then(|PathSegment { ident, .. }| {
+                        if ident == "builder" {
+                            if let Ok(Meta::NameValue(MetaNameValue {
+                                lit: Lit::Str(litstr),
+                                ..
+                            })) = attr.parse_args()
+                            {
+                                Some(litstr.value())
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }
-                    } else {
-                        None
-                    }
-                })
+                    })
             });
 
             let name = &field.ident;
-            let fieldtype = match &field.ty {
-                Type::Path(TypePath {
-                    path: Path { segments, .. },
-                    ..
-                }) => match segments.first() {
-                    Some(PathSegment {
-                        ident,
-                        arguments:
-                            PathArguments::AngleBracketed(AngleBracketedGenericArguments {
-                                args, ..
-                            }),
-                    }) if ident == "Option" => match args.first() {
-                        Some(GenericArgument::Type(t)) => Some(FieldType::Optional(t)),
+            let fieldtype = if let Type::Path(TypePath {
+                path: Path { segments, .. },
+                ..
+            }) = &field.ty
+            {
+                if let Some(PathSegment {
+                    ident,
+                    arguments:
+                        PathArguments::AngleBracketed(AngleBracketedGenericArguments { args, .. }),
+                }) = segments.first()
+                {
+                    match ident.to_string().as_ref() {
+                        "Option" => {
+                            if let Some(GenericArgument::Type(t)) = args.first() {
+                                Some(FieldType::Optional(t))
+                            } else {
+                                None
+                            }
+                        }
+                        "Vec" => {
+                            if let Some(GenericArgument::Type(t)) = args.first() {
+                                if let Some(attr_val) = attr_val {
+                                    let ident = Ident::new(&attr_val, Span::call_site());
+                                    Some(FieldType::Repeater((ident, t)))
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        }
                         _ => None,
-                    },
-                    _ => None,
-                },
-                _ => None,
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
             }
             .unwrap_or(FieldType::Required(&field.ty));
-            BuilderField { name, fieldtype }
+            BuilderField {
+                dest: name,
+                fieldtype,
+            }
         })
         .collect::<Vec<_>>();
 
-    let builder_fields = struct_fields
-        .iter()
-        .map(|BuilderField { name, fieldtype }| {
-            let ty = match *fieldtype {
-                FieldType::Optional(ty) => ty,
-                FieldType::Required(ty) => ty,
-            };
-            quote! { #name: ::std::option::Option::<#ty> }
-        });
+    let builder_fields = struct_fields.iter().map(
+        |BuilderField {
+             dest, fieldtype, ..
+         }| {
+            match *fieldtype {
+                FieldType::Optional(ty) | FieldType::Required(ty) => {
+                    quote! { #dest: ::std::option::Option::<#ty> }
+                }
+                FieldType::Repeater((_, ty)) => {
+                    quote! { #dest: ::std::vec::Vec::<#ty> }
+                }
+            }
+        },
+    );
 
     let methods = struct_fields
         .iter()
-        .map(|BuilderField { name, fieldtype }| {
-            let ty = match *fieldtype {
-                FieldType::Optional(ty) => ty,
-                FieldType::Required(ty) => ty,
-            };
-            quote! {
-                fn #name(&mut self, #name: #ty) -> &mut Self {
-                    self.#name = Some(#name);
-                    self
+        .map(|BuilderField { dest, fieldtype }| match fieldtype {
+            FieldType::Optional(ty) | FieldType::Required(ty) => {
+                quote! {
+                    fn #dest(&mut self, #dest: #ty) -> &mut Self {
+                        self.#dest = Some(#dest);
+                        self
+                    }
+                }
+            }
+            FieldType::Repeater((ident, ty)) => {
+                quote! {
+                    fn #ident(&mut self, #ident: #ty) -> &mut Self {
+                        self.#dest.push(#ident);
+                        self
+                    }
                 }
             }
         });
@@ -107,8 +145,9 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let output_fields =
         struct_fields
             .iter()
-            .map(|BuilderField { name, fieldtype }| match *fieldtype {
+            .map(|BuilderField { dest: name, fieldtype, ..}| match *fieldtype {
                 FieldType::Optional(_) => quote! { #name: self.#name.take() },
+                FieldType::Repeater(_) => quote! { #name: self.#name.drain(..).collect() },
                 FieldType::Required(_) => quote! { #name: self.#name.take().ok_or_else(|| format!("required value is unset: {}", stringify!(#name)))? },
             });
 
