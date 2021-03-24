@@ -1,20 +1,26 @@
 use proc_macro2::Span;
 use quote::quote;
 use syn::{
-    parse_macro_input, AngleBracketedGenericArguments, Data, DataStruct, DeriveInput,
-    GenericArgument, Ident, Lit, Meta, MetaNameValue, Path, PathArguments, PathSegment, Type,
-    TypePath,
+    parse_macro_input, spanned::Spanned, AngleBracketedGenericArguments, Data, DataStruct,
+    DeriveInput, Error, GenericArgument, Ident, Lit, Meta, MetaList, MetaNameValue, NestedMeta,
+    Path, PathArguments, PathSegment, Type, TypePath,
 };
 
 enum FieldType<'a> {
     Optional(&'a Type),
     Required(&'a Type),
     Repeater((Ident, &'a Type)),
+    MalFormed((Span, &'static str)),
 }
 
 struct BuilderField<'a> {
     dest: &'a Option<Ident>,
     fieldtype: FieldType<'a>,
+}
+
+struct BadFieldError {
+    span: Span,
+    msg: &'static str,
 }
 
 #[proc_macro_derive(Builder, attributes(builder))]
@@ -37,26 +43,38 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         .map(|field| {
             let attrs = &field.attrs;
 
-            let attr_val: Option<String> = attrs.first().and_then(|attr| {
-                attr.path
-                    .segments
-                    .first()
-                    .and_then(|PathSegment { ident, .. }| {
-                        if ident == "builder" {
-                            if let Ok(Meta::NameValue(MetaNameValue {
-                                lit: Lit::Str(litstr),
-                                ..
-                            })) = attr.parse_args()
-                            {
-                                Some(litstr.value())
+            let attr_val: Result<Option<String>, BadFieldError> =
+                attrs.first().map_or_else(
+                    || Ok(None),
+                    |attr| {
+                        if let Ok(ref list) = attr.parse_meta() {
+                            if let Meta::List(MetaList { path, nested, .. }) = list {
+                                match path.get_ident() {
+                                    Some(ident) if ident == "builder" => match nested.first() {
+                                        Some(NestedMeta::Meta(Meta::NameValue(
+                                            MetaNameValue { path, lit, .. },
+                                        ))) => match path.get_ident() {
+                                            Some(ident) if ident == "each" => match lit {
+                                                Lit::Str(s) => Ok(Some(s.value())),
+                                                _ => Ok(None),
+                                            },
+                                            _ => Err(BadFieldError {
+                                                span: list.span(),
+                                                msg: "I don't know what to do about this",
+                                            }),
+                                        },
+                                        _ => Ok(None),
+                                    },
+                                    _ => Ok(None),
+                                }
                             } else {
-                                None
+                                Ok(None)
                             }
                         } else {
-                            None
+                            Ok(None)
                         }
-                    })
-            });
+                    },
+                );
 
             let name = &field.ident;
             let fieldtype = if let Type::Path(TypePath {
@@ -70,21 +88,25 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                         PathArguments::AngleBracketed(AngleBracketedGenericArguments { args, .. }),
                 }) = segments.first()
                 {
-                    match ident.to_string().as_ref() {
-                        "Option" => {
+                    match ident {
+                        _ if ident == "Option" => {
                             if let Some(GenericArgument::Type(t)) = args.first() {
                                 Some(FieldType::Optional(t))
                             } else {
                                 None
                             }
                         }
-                        "Vec" => {
+                        _ if ident == "Vec" => {
                             if let Some(GenericArgument::Type(t)) = args.first() {
-                                if let Some(attr_val) = attr_val {
-                                    let ident = Ident::new(&attr_val, Span::call_site());
-                                    Some(FieldType::Repeater((ident, t)))
-                                } else {
-                                    None
+                                match attr_val {
+                                    Ok(Some(attr_val)) => {
+                                        let ident = Ident::new(&attr_val, Span::call_site());
+                                        Some(FieldType::Repeater((ident, t)))
+                                    }
+                                    Err(BadFieldError { span, msg }) => {
+                                        Some(FieldType::MalFormed((span, msg)))
+                                    }
+                                    _ => None,
                                 }
                             } else {
                                 None
@@ -106,20 +128,29 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         })
         .collect::<Vec<_>>();
 
-    let builder_fields = struct_fields.iter().map(
-        |BuilderField {
-             dest, fieldtype, ..
-         }| {
-            match *fieldtype {
-                FieldType::Optional(ty) | FieldType::Required(ty) => {
-                    quote! { #dest: ::std::option::Option::<#ty> }
+    let builder_fields = match struct_fields
+        .iter()
+        .map(
+            |BuilderField {
+                 dest, fieldtype, ..
+             }| {
+                match *fieldtype {
+                    FieldType::Optional(ty) | FieldType::Required(ty) => {
+                        Ok(quote! { #dest: ::std::option::Option::<#ty> })
+                    }
+                    FieldType::Repeater((_, ty)) => Ok(quote! { #dest: ::std::vec::Vec::<#ty> }),
+                    FieldType::MalFormed((span, _)) => {
+                        Err(Error::new(span, r#"expected `builder(each = "...")`"#)
+                            .to_compile_error())
+                    }
                 }
-                FieldType::Repeater((_, ty)) => {
-                    quote! { #dest: ::std::vec::Vec::<#ty> }
-                }
-            }
-        },
-    );
+            },
+        )
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(fields) => fields,
+        Err(err) => return err.into(),
+    };
 
     let methods = struct_fields
         .iter()
@@ -140,6 +171,7 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     }
                 }
             }
+            _ => quote!(),
         });
 
     let output_fields =
@@ -149,6 +181,7 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 FieldType::Optional(_) => quote! { #name: self.#name.take() },
                 FieldType::Repeater(_) => quote! { #name: self.#name.drain(..).collect() },
                 FieldType::Required(_) => quote! { #name: self.#name.take().ok_or_else(|| format!("required value is unset: {}", stringify!(#name)))? },
+                FieldType::MalFormed(_) => quote!(),
             });
 
     (quote! {
