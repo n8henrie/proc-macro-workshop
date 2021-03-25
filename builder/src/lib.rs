@@ -10,17 +10,12 @@ enum FieldType<'a> {
     Optional(&'a Type),
     Required(&'a Type),
     Repeater((Ident, &'a Type)),
-    MalFormed((Span, &'static str)),
+    MalFormed(Span),
 }
 
 struct BuilderField<'a> {
     dest: &'a Option<Ident>,
     fieldtype: FieldType<'a>,
-}
-
-struct BadFieldError {
-    span: Span,
-    msg: &'static str,
 }
 
 #[proc_macro_derive(Builder, attributes(builder))]
@@ -43,7 +38,7 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         .map(|field| {
             let attrs = &field.attrs;
 
-            let attr_val: Result<Option<String>, BadFieldError> =
+            let attr_val: Result<Option<String>, Span> =
                 attrs.first().map_or_else(
                     || Ok(None),
                     |attr| {
@@ -58,10 +53,7 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                                                 Lit::Str(s) => Ok(Some(s.value())),
                                                 _ => Ok(None),
                                             },
-                                            _ => Err(BadFieldError {
-                                                span: list.span(),
-                                                msg: "I don't know what to do about this",
-                                            }),
+                                            _ => Err(list.span()),
                                         },
                                         _ => Ok(None),
                                     },
@@ -103,9 +95,7 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                                         let ident = Ident::new(&attr_val, Span::call_site());
                                         Some(FieldType::Repeater((ident, t)))
                                     }
-                                    Err(BadFieldError { span, msg }) => {
-                                        Some(FieldType::MalFormed((span, msg)))
-                                    }
+                                    Err(span) => Some(FieldType::MalFormed(span)),
                                     _ => None,
                                 }
                             } else {
@@ -139,7 +129,7 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                         Ok(quote! { #dest: ::std::option::Option::<#ty> })
                     }
                     FieldType::Repeater((_, ty)) => Ok(quote! { #dest: ::std::vec::Vec::<#ty> }),
-                    FieldType::MalFormed((span, _)) => {
+                    FieldType::MalFormed(span) => {
                         Err(Error::new(span, r#"expected `builder(each = "...")`"#)
                             .to_compile_error())
                     }
