@@ -38,35 +38,32 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         .map(|field| {
             let attrs = &field.attrs;
 
-            let attr_val: Result<Option<String>, Span> =
-                attrs.first().map_or_else(
-                    || Ok(None),
-                    |attr| {
-                        if let Ok(ref list) = attr.parse_meta() {
-                            if let Meta::List(MetaList { path, nested, .. }) = list {
-                                match path.get_ident() {
-                                    Some(ident) if ident == "builder" => match nested.first() {
-                                        Some(NestedMeta::Meta(Meta::NameValue(
-                                            MetaNameValue { path, lit, .. },
-                                        ))) => match path.get_ident() {
-                                            Some(ident) if ident == "each" => match lit {
-                                                Lit::Str(s) => Ok(Some(s.value())),
-                                                _ => Ok(None),
-                                            },
-                                            _ => Err(list.span()),
-                                        },
-                                        _ => Ok(None),
-                                    },
-                                    _ => Ok(None),
-                                }
-                            } else {
-                                Ok(None)
-                            }
-                        } else {
-                            Ok(None)
-                        }
-                    },
-                );
+            let attr_val: Result<Option<String>, Span> = (|| {
+                if let Some(attr) = attrs.first() {
+                    if let Ok(ref list) = attr.parse_meta() {
+                        if let Meta::List(MetaList { path, nested, .. }) = list {
+                            if let Some(ident) = path.get_ident() {
+                                if ident == "builder" {
+                                    if let Some(NestedMeta::Meta(Meta::NameValue(
+                                        MetaNameValue { path, lit, .. },
+                                    ))) = nested.first()
+                                    {
+                                        if let Some(ident) = path.get_ident() {
+                                            if ident == "each" {
+                                                if let Lit::Str(s) = lit {
+                                                    return Ok(Some(s.value()));
+                                                }
+                                            };
+                                            return Err(list.span());
+                                        };
+                                    };
+                                };
+                            };
+                        };
+                    };
+                };
+                Ok(None)
+            })();
 
             let name = &field.ident;
             let fieldtype = if let Type::Path(TypePath {
