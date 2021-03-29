@@ -186,7 +186,7 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
      impl #builder_name {
          #(#methods)*
-        pub fn build(&mut self) -> Result<#structname, Box<dyn std::error::Error>> {
+        pub fn build(&mut self) -> ::std::result::Result<#structname, ::std::boxed::Box<dyn ::std::error::Error>> {
             Ok(#structname{
                 #(#output_fields),*
             })
