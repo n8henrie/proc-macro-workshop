@@ -66,47 +66,46 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             })();
 
             let name = &field.ident;
-            let fieldtype = if let Type::Path(TypePath {
-                path: Path { segments, .. },
-                ..
-            }) = &field.ty
-            {
-                if let Some(PathSegment {
-                    ident,
-                    arguments:
-                        PathArguments::AngleBracketed(AngleBracketedGenericArguments { args, .. }),
-                }) = segments.first()
+            let fieldtype = (|| {
+                if let Type::Path(TypePath {
+                    path: Path { segments, .. },
+                    ..
+                }) = &field.ty
                 {
-                    match ident {
-                        _ if ident == "Option" => {
-                            if let Some(GenericArgument::Type(t)) = args.first() {
-                                Some(FieldType::Optional(t))
-                            } else {
-                                None
-                            }
-                        }
-                        _ if ident == "Vec" => {
-                            if let Some(GenericArgument::Type(t)) = args.first() {
-                                match attr_val {
-                                    Ok(Some(attr_val)) => {
-                                        let ident = Ident::new(&attr_val, Span::call_site());
-                                        Some(FieldType::Repeater((ident, t)))
-                                    }
-                                    Err(span) => Some(FieldType::MalFormed(span)),
-                                    _ => None,
+                    if let Some(PathSegment {
+                        ident,
+                        arguments:
+                            PathArguments::AngleBracketed(AngleBracketedGenericArguments {
+                                args, ..
+                            }),
+                    }) = segments.first()
+                    {
+                        match ident {
+                            _ if ident == "Option" => {
+                                if let Some(GenericArgument::Type(t)) = args.first() {
+                                    return Some(FieldType::Optional(t));
                                 }
-                            } else {
-                                None
                             }
+                            _ if ident == "Vec" => {
+                                if let Some(GenericArgument::Type(t)) = args.first() {
+                                    match attr_val {
+                                        Ok(Some(attr_val)) => {
+                                            let ident = Ident::new(&attr_val, Span::call_site());
+                                            return Some(FieldType::Repeater((ident, t)));
+                                        }
+                                        Err(span) => {
+                                            return Some(FieldType::MalFormed(span));
+                                        }
+                                        _ => (),
+                                    }
+                                }
+                            }
+                            _ => (),
                         }
-                        _ => None,
                     }
-                } else {
-                    None
                 }
-            } else {
                 None
-            }
+            })()
             .unwrap_or(FieldType::Required(&field.ty));
             BuilderField {
                 dest: name,
