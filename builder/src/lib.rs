@@ -167,7 +167,7 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 FieldType::Optional(_) => quote! { #name: self.#name.take() },
                 FieldType::Repeater(_) => quote! { #name: self.#name.drain(..).collect() },
                 FieldType::Required(_) => quote! { #name: self.#name.take().ok_or_else(|| format!("required value is unset: {}", stringify!(#name)))? },
-                FieldType::MalFormed(_) => quote!(),
+                _ => unreachable!(),
             });
 
     (quote! {
