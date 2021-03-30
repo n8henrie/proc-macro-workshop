@@ -1,21 +1,21 @@
 use proc_macro2::Span;
-use quote::quote;
+use quote::{quote, ToTokens};
 use syn::{
-    parse_macro_input, spanned::Spanned, AngleBracketedGenericArguments, Data, DataStruct,
-    DeriveInput, Error, GenericArgument, Ident, Lit, Meta, MetaList, MetaNameValue, NestedMeta,
-    Path, PathArguments, PathSegment, Type, TypePath,
+    parse_macro_input, AngleBracketedGenericArguments, Data, DataStruct, DeriveInput, Error,
+    GenericArgument, Ident, Lit, Meta, MetaList, MetaNameValue, NestedMeta, Path, PathArguments,
+    PathSegment, Type, TypePath,
 };
 
-enum FieldType<'a> {
+enum FieldType<'a, T: ToTokens> {
     Optional(&'a Type),
     Required(&'a Type),
     Repeater((Ident, &'a Type)),
-    MalFormed(Span),
+    MalFormed(T),
 }
 
-struct BuilderField<'a> {
+struct BuilderField<'a, T: ToTokens> {
     dest: &'a Option<Ident>,
-    fieldtype: FieldType<'a>,
+    fieldtype: FieldType<'a, T>,
 }
 
 #[proc_macro_derive(Builder, attributes(builder))]
@@ -38,25 +38,28 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         .map(|field| {
             let attrs = &field.attrs;
 
-            let attr_val: Result<Option<String>, Span> = (|| {
+            let attr_val = (|| {
                 if let Some(attr) = attrs.first() {
-                    if let Ok(ref list) = attr.parse_meta() {
-                        if let Meta::List(MetaList { path, nested, .. }) = list {
-                            if let Some(ident) = path.get_ident() {
-                                if ident == "builder" {
-                                    if let Some(NestedMeta::Meta(Meta::NameValue(
-                                        MetaNameValue { path, lit, .. },
-                                    ))) = nested.first()
-                                    {
-                                        if let Some(ident) = path.get_ident() {
-                                            if ident == "each" {
-                                                if let Lit::Str(s) = lit {
-                                                    return Ok(Some(s.value()));
-                                                }
-                                            };
-                                            return Err(list.span());
-                                        };
+                    if let Ok(Meta::List(metalist)) = attr.parse_meta() {
+                        let MetaList {
+                            ref path,
+                            ref nested,
+                            ..
+                        } = metalist;
+                        if path.is_ident("builder") {
+                            if let Some(NestedMeta::Meta(Meta::NameValue(MetaNameValue {
+                                path,
+                                lit,
+                                ..
+                            }))) = nested.first()
+                            {
+                                if let Some(ident) = path.get_ident() {
+                                    if ident == "each" {
+                                        if let Lit::Str(s) = lit {
+                                            return Ok(Some(s.value()));
+                                        }
                                     };
+                                    return Err(metalist);
                                 };
                             };
                         };
@@ -120,13 +123,13 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             |BuilderField {
                  dest, fieldtype, ..
              }| {
-                match *fieldtype {
+                match fieldtype {
                     FieldType::Optional(ty) | FieldType::Required(ty) => {
                         Ok(quote! { #dest: ::std::option::Option::<#ty> })
                     }
                     FieldType::Repeater((_, ty)) => Ok(quote! { #dest: ::std::vec::Vec::<#ty> }),
-                    FieldType::MalFormed(span) => {
-                        Err(Error::new(span, r#"expected `builder(each = "...")`"#)
+                    FieldType::MalFormed(t) => {
+                        Err(Error::new_spanned(t, r#"expected `builder(each = "...")`"#)
                             .to_compile_error())
                     }
                 }
