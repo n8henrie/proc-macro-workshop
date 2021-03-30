@@ -53,14 +53,12 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                                 ..
                             }))) = nested.first()
                             {
-                                if let Some(ident) = path.get_ident() {
-                                    if ident == "each" {
-                                        if let Lit::Str(s) = lit {
-                                            return Ok(Some(s.value()));
-                                        }
+                                if path.is_ident("each") {
+                                    if let Lit::Str(s) = lit {
+                                        return Ok(Some(s.value()));
                                     };
-                                    return Err(metalist);
                                 };
+                                return Err(metalist);
                             };
                         };
                     };
@@ -96,8 +94,8 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                                             let ident = Ident::new(&attr_val, Span::call_site());
                                             return Some(FieldType::Repeater((ident, t)));
                                         }
-                                        Err(span) => {
-                                            return Some(FieldType::MalFormed(span));
+                                        Err(t) => {
+                                            return Some(FieldType::MalFormed(t));
                                         }
                                         _ => (),
                                     }
