@@ -11,9 +11,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let parsed_input = syn::parse_macro_input!(input as syn::DeriveInput);
 
     let structname = parsed_input.ident;
-    let generics = add_trait_bounds(parsed_input.generics);
-
-    let (impl_generics, type_generics, where_clauses) = generics.split_for_impl();
+    let mut generics = parsed_input.generics;
 
     let named_fields = match parsed_input.data {
         syn::Data::Struct(
@@ -25,7 +23,25 @@ pub fn derive(input: TokenStream) -> TokenStream {
         ) => named
             .iter()
             .map(|field| {
+                if let syn::Type::Path(p) = &field.ty {
+                    if let Some(segment) = p.path.segments.first() {
+                        if segment.ident != "PhantomData" {
+                            let ident = p.path.get_ident();
+                            for param in generics.params.iter_mut() {
+                                match (param, ident) {
+                                    (syn::GenericParam::Type(tp), Some(ident))
+                                        if &tp.ident == ident =>
+                                    {
+                                        tp.bounds.push(syn::parse_quote!(::std::fmt::Debug));
+                                    }
+                                    _ => continue,
+                                }
+                            }
+                        }
+                    };
+                };
                 let syn::Field { attrs, .. } = field;
+
                 if let Some(attr) = attrs.first() {
                     let syn::Attribute { path, .. } = &attr;
                     if path.is_ident("debug") {
@@ -50,6 +66,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
         _ => panic!("no fields!"),
     };
 
+    let (impl_generics, type_generics, where_clauses) = generics.split_for_impl();
 
     let output_fields = named_fields
         .into_iter()
@@ -63,7 +80,6 @@ pub fn derive(input: TokenStream) -> TokenStream {
         })
         .collect::<Vec<_>>();
 
-
     let output = quote! {
         impl #impl_generics ::std::fmt::Debug for #structname #type_generics #where_clauses
         {
@@ -75,16 +91,4 @@ pub fn derive(input: TokenStream) -> TokenStream {
         }
     };
     output.into()
-}
-
-// Add a bound `T: HeapSize` to every type parameter T.
-fn add_trait_bounds(mut generics: syn::Generics) -> syn::Generics {
-    for param in &mut generics.params {
-        if let syn::GenericParam::Type(ref mut type_param) = *param {
-            type_param
-                .bounds
-                .push(syn::parse_quote!(::std::fmt::Debug));
-        }
-    }
-    generics
 }
