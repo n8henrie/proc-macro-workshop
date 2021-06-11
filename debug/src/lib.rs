@@ -6,6 +6,33 @@ struct DebugField<T: ToTokens> {
     format: Option<String>,
 }
 
+fn get_ultimate_identifier(t: &syn::Type) -> &syn::Ident {
+    match t {
+        syn::Type::Path(syn::TypePath{path: syn::Path{segments, ..}, ..}) => {
+            for segment in segments {
+                match segment {
+                    syn::PathSegment{arguments, ..} => {
+                        match arguments {
+                            syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments{args, ..}) => {
+                                for arg in args {
+                                    match arg {
+                                        syn::GenericArgument::Type(t) => return get_ultimate_identifier(t),
+                                        _ => (),
+                                    }
+                                };
+                            },
+                            syn::PathArguments::None => return &segment.ident,
+                            _ => (),
+                        };
+                    }
+                }
+            }
+        },
+        _ => unimplemented!("No identifier here!"),
+    }
+    unimplemented!("No identifier here either!")
+}
+
 #[proc_macro_derive(CustomDebug, attributes(debug))]
 pub fn derive(input: TokenStream) -> TokenStream {
     let parsed_input = syn::parse_macro_input!(input as syn::DeriveInput);
@@ -24,21 +51,20 @@ pub fn derive(input: TokenStream) -> TokenStream {
             .iter()
             .map(|field| {
                 if let syn::Type::Path(p) = &field.ty {
-                    if let Some(segment) = p.path.segments.first() {
+                    for segment in &p.path.segments {
                         if segment.ident != "PhantomData" {
-                            let ident = p.path.get_ident();
-                            for param in generics.params.iter_mut() {
-                                match (param, ident) {
-                                    (syn::GenericParam::Type(tp), Some(ident))
-                                        if &tp.ident == ident =>
-                                    {
-                                        tp.bounds.push(syn::parse_quote!(::std::fmt::Debug));
+                            let ident = get_ultimate_identifier(&field.ty);                            
+                            for generic_param in generics.params.iter_mut() {
+                                if let syn::GenericParam::Type(generic_tp) = generic_param {                                    
+                                    if &generic_tp.ident == ident {
+                                        generic_tp
+                                            .bounds
+                                            .push(syn::parse_quote!(::std::fmt::Debug));
                                     }
-                                    _ => continue,
                                 }
                             }
                         }
-                    };
+                    }
                 };
                 let syn::Field { attrs, .. } = field;
 
