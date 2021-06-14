@@ -65,6 +65,32 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let mut generics = parsed_input.generics;
     let mut associates_types = Vec::new();
 
+    let attr_bounds: Vec<_> = parsed_input
+        .attrs
+        .iter()
+        .filter_map(|attr| {
+            if let Ok(syn::Meta::List(syn::MetaList { path, nested, .. })) = attr.parse_meta() {
+                if path.is_ident("debug") {
+                    if let Some(syn::NestedMeta::Meta(syn::Meta::NameValue(syn::MetaNameValue {
+                        path: inner_path,
+                        lit: syn::Lit::Str(litstr),
+                        ..
+                    }))) = nested.first()
+                    {
+                        if inner_path.is_ident("bound") {
+                            if let Ok(where_predicate) =
+                                syn::parse_str::<syn::WherePredicate>(&litstr.value())
+                            {
+                                return Some(where_predicate);
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        })
+        .collect();
+
     let named_fields = match parsed_input.data {
         syn::Data::Struct(
             syn::DataStruct {
@@ -90,6 +116,23 @@ pub fn derive(input: TokenStream) -> TokenStream {
                                             .iter()
                                             .map(|&at| &at.segments[0].ident)
                                             .any(|at_ident| at_ident == ident)
+                                        && !attr_bounds.iter().any(|bound| {
+                                            if let syn::WherePredicate::Type(syn::PredicateType {
+                                                bounded_ty: syn::Type::Path(tp),
+                                                ..
+                                            }) = &bound
+                                            {
+                                                if let Some(ident) = tp
+                                                    .path
+                                                    .segments
+                                                    .first()
+                                                    .map(|segment| &segment.ident)
+                                                {
+                                                    return &generic_tp.ident == ident;
+                                                }
+                                            }
+                                            false
+                                        })
                                     {
                                         generic_tp
                                             .bounds
@@ -131,6 +174,9 @@ pub fn derive(input: TokenStream) -> TokenStream {
         where_clause
             .predicates
             .push(syn::parse_quote!(#at : ::std::fmt::Debug));
+    }
+    for bound in attr_bounds {
+        where_clause.predicates.push(bound);
     }
 
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
